@@ -229,8 +229,8 @@
 
   // ---------- Mapa (MapLibre GL, tiles OSM em raster — sem precisar de API key) ----------
   const TRUCK_SVG = '<svg width="30" height="30" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">' +
-    '<rect x="8" y="2" width="8" height="12" rx="1.5" fill="#dc2626" stroke="#7f1d1d" stroke-width="0.6"/>' +
-    '<rect x="6" y="13" width="12" height="6" rx="1.5" fill="#dc2626" stroke="#7f1d1d" stroke-width="0.6"/>' +
+    '<rect x="8" y="2" width="8" height="12" rx="1.5" fill="#ff0000" stroke="#7f0000" stroke-width="0.8"/>' +
+    '<rect x="6" y="13" width="12" height="6" rx="1.5" fill="#ff0000" stroke="#7f0000" stroke-width="0.8"/>' +
     '<rect x="9.5" y="4" width="5" height="4" rx="0.5" fill="#bfdbfe"/>' +
     '<circle cx="9" cy="20" r="1.7" fill="#1f2937"/>' +
     '<circle cx="15" cy="20" r="1.7" fill="#1f2937"/>' +
@@ -239,10 +239,8 @@
   let mapaGL = null;
   let marcadorCaminhao = null;
   let coordenadasRota = [];
-  let compassoDisponivel = false;
   let headingAtual = 0;
   let centroAtual = null;       // [lng, lat] mais recente
-  let ultimaSincroniaCompasso = 0;
 
   function inicializarMapaSeNecessario(lat, lng) {
     if (mapaGL) return;
@@ -314,8 +312,8 @@
     marcadorCaminhao.setLngLat([lng, lat]);
     centroAtual = [lng, lat];
 
-    // sem bússola ativa, usa o rumo vindo do GPS (heading do location ou calculado entre pontos)
-    if (!compassoDisponivel && headingGraus !== null && !isNaN(headingGraus)) {
+    // rumo vindo do GPS (heading do location ou calculado entre os dois ultimos pontos)
+    if (headingGraus !== null && !isNaN(headingGraus)) {
       headingAtual = headingGraus;
       atualizarCompasso(headingGraus);
     }
@@ -332,37 +330,6 @@
     const y = Math.sin(toRad(lon2 - lon1)) * Math.cos(toRad(lat2));
     const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) - Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(toRad(lon2 - lon1));
     return (toDeg(Math.atan2(y, x)) + 360) % 360;
-  }
-
-  // Bússola do celular (magnetômetro/giroscópio) — quando disponível, gira o mapa
-  // continuamente, inclusive parado. iOS pede permissão explícita; Android geralmente não.
-  // Throttle de ~150ms pra não sobrecarregar o mapa com o evento disparando dezenas de vezes por segundo.
-  function iniciarCompasso() {
-    function handler(e) {
-      const agora = Date.now();
-      if (agora - ultimaSincroniaCompasso < 150) return;
-      let heading = null;
-      if (e.webkitCompassHeading !== undefined && e.webkitCompassHeading !== null) {
-        heading = e.webkitCompassHeading; // iOS — já em graus horário a partir do norte
-      } else if (e.alpha !== null && e.alpha !== undefined) {
-        heading = (360 - e.alpha) % 360; // aproximação comum pra Android — pode precisar de ajuste fino por aparelho
-      }
-      if (heading !== null && !isNaN(heading)) {
-        ultimaSincroniaCompasso = agora;
-        compassoDisponivel = true;
-        headingAtual = heading;
-        atualizarCompasso(heading);
-        sincronizarCamera();
-      }
-    }
-    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-      DeviceOrientationEvent.requestPermission().then(resp => {
-        if (resp === 'granted') window.addEventListener('deviceorientation', handler, true);
-      }).catch(() => {});
-    } else {
-      window.addEventListener('deviceorientationabsolute', handler, true);
-      window.addEventListener('deviceorientation', handler, true);
-    }
   }
 
   // Tema claro/escuro automático por horário do aparelho — escuro a partir das 18h.
@@ -462,13 +429,11 @@
     const speedKmh = (speedMs !== null && speedMs !== undefined) ? speedMs * 3.6 : null;
 
     let headingParaMapa = null;
-    if (!compassoDisponivel) {
-      if (typeof headingGps === 'number' && !isNaN(headingGps)) {
-        headingParaMapa = headingGps;
-      } else if (pontos.length > 0) {
-        const ultimo = pontos[pontos.length - 1];
-        headingParaMapa = calcularBearing(ultimo.lat, ultimo.lng, lat, lng);
-      }
+    if (typeof headingGps === 'number' && !isNaN(headingGps)) {
+      headingParaMapa = headingGps;
+    } else if (pontos.length > 0) {
+      const ultimo = pontos[pontos.length - 1];
+      headingParaMapa = calcularBearing(ultimo.lat, ultimo.lng, lat, lng);
     }
 
     if (pontos.length > 0) {
@@ -522,7 +487,6 @@
 
   async function iniciarNativo() {
     lerKmInicial();
-    iniciarCompasso();
     setStatus('statusGeo', 'Pedindo permissão de localização (segundo plano)...', 'wait');
     try {
       watcherId = await BackgroundGeolocation.addWatcher(
@@ -573,7 +537,6 @@
       return;
     }
     lerKmInicial();
-    iniciarCompasso();
     setStatus('statusGeo', 'Pedindo permissão de localização...', 'wait');
     watchId = navigator.geolocation.watchPosition(
       (pos) => {
