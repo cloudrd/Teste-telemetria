@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Esboço FMS — Telemetria (app)</title>
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
@@ -44,7 +45,6 @@
   .status.ok { background: #dcfce7; color: #166534; }
   .status.alerta { background: #fee2e2; color: #991b1b; }
   .status.bg { background: #dbeafe; color: #1e40af; }
-  canvas { width: 100%; height: 220px; background: #0f172a; border-radius: 8px; display: block; }
   .legenda { font-size: 11px; color: #888; margin-top: 6px; }
   label.lbl { font-size: 12.5px; color: #555; font-weight: 600; display: block; margin-bottom: 4px; }
   .badge {
@@ -66,27 +66,53 @@
     padding: 3px 8px; border-radius: 999px;
   }
   .vazio { color: #999; font-size: 12.5px; font-style: italic; }
+
+  .mapa-wrap { position: relative; height: 300px; border-radius: 8px; overflow: hidden; background: #dbe2e8; }
+  #mapaReal { width: 100%; height: 100%; }
+  .compasso {
+    position: absolute; top: 8px; left: 8px; width: 40px; height: 40px;
+    border-radius: 50%; background: rgba(255,255,255,0.85); z-index: 5; pointer-events: none;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+  }
+  .compasso-rot { width: 100%; height: 100%; position: relative; transition: transform .25s linear; }
+  .compasso-rot .n, .compasso-rot .s {
+    position: absolute; left: 50%; transform: translateX(-50%); font-weight: 800; font-size: 12px;
+  }
+  .compasso-rot .n { top: 2px; color: #dc2626; }
+  .compasso-rot .s { bottom: 2px; color: #1e293b; }
+  .overlay-latlng {
+    position: absolute; top: 8px; right: 8px; z-index: 5; background: rgba(255,255,255,0.9);
+    border-radius: 8px; padding: 6px 9px; font-size: 11px; font-weight: 600; color: #333;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.3); text-align: right;
+  }
+  .overlay-latlng a { display: block; color: #2563eb; font-size: 10.5px; margin-top: 2px; text-decoration: none; }
 </style>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 </head>
 <body>
   <h1>Esboço de FMS — Telemetria <span id="modoBadge" class="badge">web</span></h1>
   <div class="sub">Captura de GPS em segundo plano (app) alimentando a mesma lógica do backlog (km estimado × hodômetro real × alerta de divergência)</div>
 
   <div class="card">
-    <h2>🚗 Antes de começar</h2>
-    <label class="lbl">Km inicial do veículo (odômetro, opcional)</label>
-    <input type="number" id="kmInicial" placeholder="ex: 45320" step="1">
+    <h2>🗺️ GPS — mapa em tempo real</h2>
+    <div class="mapa-wrap">
+      <div id="mapaReal"></div>
+      <div class="compasso"><div class="compasso-rot" id="compassoRot"><span class="n">N</span><span class="s">S</span></div></div>
+      <div class="overlay-latlng">
+        <div id="latlng">—</div>
+        <a id="linkMaps" href="#" target="_blank" style="display:none;">Abrir no Maps &#8599;</a>
+      </div>
+    </div>
+    <div class="legenda">Mapa inclinado (visão 3D) e sempre virado pra frente — o veículo (caminhão vermelho) fica fixo apontando pra cima, e o mapa gira ao redor dele. Bússola no canto mostra Norte/Sul. Precisa de internet pra carregar os tiles; a captura de GPS em si continua offline.</div>
   </div>
 
   <div class="card">
-    <h2>📍 Captura de GPS</h2>
+    <h2>📊 Dados da viagem</h2>
     <button id="btnGeo">Iniciar período de telemetria</button>
     <div id="statusGeo" class="status wait">Aguardando início.</div>
     <div class="grid3" style="margin-top:10px;">
       <div class="field"><div class="label">Km percorrido</div><div class="value" id="kmEstimado">0.00</div></div>
-      <div class="field destaque"><div class="label">Km total (odômetro)</div><div class="value" id="kmTotal">—</div></div>
       <div class="field"><div class="label">Paradas</div><div class="value" id="numParadas">0</div></div>
+      <div class="field"><div class="label">Excessos de vel.</div><div class="value" id="numAlertas">0</div></div>
     </div>
     <div class="grid3" style="margin-top:10px;">
       <div class="field" id="fieldSpd">
@@ -101,34 +127,31 @@
       <div class="field"><div class="label">Precisão GPS</div><div class="value" id="acc">—</div></div>
       <div class="field"><div class="label">Leituras</div><div class="value" id="count">0</div></div>
       <div class="field"><div class="label">Tempo parado</div><div class="value" id="tempoParado">0 min</div></div>
-      <div class="field"><div class="label">Excessos de vel.</div><div class="value" id="numAlertas">0</div></div>
     </div>
   </div>
 
   <div class="card">
     <h2>🚨 Alertas de excesso de velocidade</h2>
     <div id="listaAlertas"><div class="vazio">Nenhum excesso registrado ainda.</div></div>
-    <div class="legenda">Limite configurado: 80 km/h. Cada excesso fica registrado aqui — em uma versão com backend, esse mesmo evento dispararia o alerta em tempo real no FMS do desktop (ver função enviarAlertaDesktop no código).</div>
+    <div class="legenda">Limite configurado: 80 km/h. Em uma versão com backend, esse evento dispararia o alerta em tempo real no FMS do desktop (ver função enviarAlertaDesktop no código).</div>
   </div>
 
   <div class="card">
     <h2>⏸️ Paradas detectadas</h2>
     <div id="listaParadas"><div class="vazio">Nenhuma parada detectada ainda.</div></div>
-    <div class="legenda">Detecção automática: quando o veículo fica parado por 2 minutos ou mais (sem deslocamento relevante), registra o horário e a duração. Paradas curtas (semáforo, trânsito) não entram na lista.</div>
+    <div class="legenda">Detecção automática: parado 2 minutos ou mais, sem deslocamento relevante. Paradas curtas (semáforo, trânsito) não entram na lista.</div>
   </div>
 
   <div class="card">
-    <h2>🗺️ Trilha percorrida (mapa real)</h2>
-    <div id="mapaReal" style="height:280px; border-radius:8px; background:#e5e7eb;"></div>
-    <div class="legenda">Verde = início, laranja = posição atual, vermelho = pontos de parada. Mapa via OpenStreetMap (precisa de internet pra carregar os tiles; a captura de GPS em si continua funcionando offline).</div>
+    <h2>🚗 Km inicial</h2>
+    <label class="lbl">Km inicial do veículo (odômetro, opcional)</label>
+    <input type="number" id="kmInicial" placeholder="ex: 45320" step="1">
+    <div class="legenda">Preencha antes de tocar em "Iniciar período de telemetria" lá em cima — mesmo esse campo estando aqui embaixo, ele é lido no momento em que a captura começa.</div>
   </div>
+
   <div class="card">
-    <h2>📍 Posição atual (GPS)</h2>
-    <div class="field" style="margin-bottom:8px;">
-      <div class="label">Latitude, Longitude</div>
-      <div class="value" id="latlng" style="font-size:16px;">—</div>
-    </div>
-    <a id="linkMaps" href="#" target="_blank" style="display:none; font-size:13px; color:#2563eb; font-weight:600; text-decoration:none;">Abrir no Google Maps &#8599;</a>
+    <h2>🏁 Km final</h2>
+    <div class="field destaque"><div class="label">Km final (odômetro)</div><div class="value" id="kmTotal" style="font-size:24px;">—</div></div>
   </div>
 
   <div class="card">
@@ -139,7 +162,7 @@
     <div id="statusReconciliacao" class="status wait">Sem comparação ainda.</div>
   </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script>
   const isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
   document.getElementById('modoBadge').textContent = isNative ? 'app (fundo ativo)' : 'web (só primeiro plano)';
@@ -152,10 +175,6 @@
   let watcherId = null;
   let watchId = null;
   let pontos = [];
-  let mapaLeaflet = null;
-  let polylinhaTrajeto = null;
-  let marcadorInicio = null;
-  let marcadorAtual = null;
   let kmAcumulado = 0;
   let leituras = 0;
   let kmInicialValor = 0;
@@ -167,6 +186,125 @@
   const LIMITE_VELOCIDADE_KMH = 80;
   const PARADA_MIN_MINUTOS = 2;
   const PARADA_MAX_DESLOCAMENTO_M = 60;
+
+  // ---------- Mapa (MapLibre GL, tiles OSM em raster — sem precisar de API key) ----------
+  const TRUCK_SVG = '<svg width="30" height="30" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">' +
+    '<rect x="8" y="2" width="8" height="12" rx="1.5" fill="#dc2626" stroke="#7f1d1d" stroke-width="0.6"/>' +
+    '<rect x="6" y="13" width="12" height="6" rx="1.5" fill="#dc2626" stroke="#7f1d1d" stroke-width="0.6"/>' +
+    '<rect x="9.5" y="4" width="5" height="4" rx="0.5" fill="#bfdbfe"/>' +
+    '<circle cx="9" cy="20" r="1.7" fill="#1f2937"/>' +
+    '<circle cx="15" cy="20" r="1.7" fill="#1f2937"/>' +
+    '</svg>';
+
+  let mapaGL = null;
+  let marcadorCaminhao = null;
+  let coordenadasRota = [];
+  let compassoDisponivel = false;
+  let headingAtual = 0;
+
+  function inicializarMapaSeNecessario(lat, lng) {
+    if (mapaGL) return;
+    mapaGL = new maplibregl.Map({
+      container: 'mapaReal',
+      style: {
+        version: 8,
+        sources: {
+          osm: {
+            type: 'raster',
+            tiles: [
+              'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
+              'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
+              'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png',
+            ],
+            tileSize: 256,
+            attribution: '© OpenStreetMap',
+          },
+        },
+        layers: [{ id: 'osm-layer', type: 'raster', source: 'osm' }],
+      },
+      center: [lng, lat],
+      zoom: 17,
+      pitch: 60,      // inclinação — dá a sensação de visão 3D / navegação
+      bearing: 0,
+      attributionControl: false,
+    });
+    mapaGL.addControl(new maplibregl.AttributionControl({ compact: true }));
+
+    mapaGL.on('load', () => {
+      mapaGL.addSource('trajeto', { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } } });
+      mapaGL.addLayer({ id: 'trajeto-linha', type: 'line', source: 'trajeto', paint: { 'line-color': '#2563eb', 'line-width': 4 } });
+    });
+
+    new maplibregl.Marker({ color: '#16a34a' }).setLngLat([lng, lat]).addTo(mapaGL); // início (verde)
+
+    const el = document.createElement('div');
+    el.innerHTML = TRUCK_SVG;
+    el.style.width = '30px';
+    el.style.height = '30px';
+    // rotationAlignment: 'map' + rotation 0 => o ícone sempre aponta "pra cima" na tela,
+    // porque quem gira é o mapa (bearing), não o ícone — efeito "sempre de frente".
+    marcadorCaminhao = new maplibregl.Marker({ element: el, rotationAlignment: 'map', rotation: 0 })
+      .setLngLat([lng, lat]).addTo(mapaGL);
+  }
+
+  function atualizarMapa(lat, lng, headingGraus) {
+    inicializarMapaSeNecessario(lat, lng);
+    coordenadasRota.push([lng, lat]);
+    const fonte = mapaGL.getSource && mapaGL.getSource('trajeto');
+    if (fonte) fonte.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: coordenadasRota } });
+    marcadorCaminhao.setLngLat([lng, lat]);
+
+    const opcoes = { center: [lng, lat], duration: 500 };
+    // se a bússola do celular estiver ativa, ela já cuida da rotação continuamente —
+    // aqui só reposiciona o centro. Sem bússola, usa o rumo vindo do GPS (heading/bearing).
+    if (!compassoDisponivel && headingGraus !== null && !isNaN(headingGraus)) {
+      opcoes.bearing = headingGraus;
+      headingAtual = headingGraus;
+      atualizarCompasso(headingGraus);
+    }
+    mapaGL.easeTo(opcoes);
+  }
+
+  function atualizarCompasso(bearingGraus) {
+    const rot = document.getElementById('compassoRot');
+    if (rot) rot.style.transform = `rotate(${-bearingGraus}deg)`;
+  }
+
+  function calcularBearing(lat1, lon1, lat2, lon2) {
+    const toRad = d => d * Math.PI / 180, toDeg = r => r * 180 / Math.PI;
+    const y = Math.sin(toRad(lon2 - lon1)) * Math.cos(toRad(lat2));
+    const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) - Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(toRad(lon2 - lon1));
+    return (toDeg(Math.atan2(y, x)) + 360) % 360;
+  }
+
+  // Bússola do celular (magnetômetro/giroscópio) — quando disponível, gira o mapa
+  // continuamente, inclusive parado. iOS pede permissão explícita; Android geralmente não.
+  function iniciarCompasso() {
+    function handler(e) {
+      let heading = null;
+      if (e.webkitCompassHeading !== undefined && e.webkitCompassHeading !== null) {
+        heading = e.webkitCompassHeading; // iOS — já em graus horário a partir do norte
+      } else if (e.alpha !== null && e.alpha !== undefined) {
+        heading = (360 - e.alpha) % 360; // aproximação comum pra Android — pode precisar de ajuste fino por aparelho
+      }
+      if (heading !== null && !isNaN(heading)) {
+        compassoDisponivel = true;
+        headingAtual = heading;
+        if (mapaGL) mapaGL.easeTo({ bearing: heading, duration: 250 });
+        atualizarCompasso(heading);
+      }
+    }
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      DeviceOrientationEvent.requestPermission().then(resp => {
+        if (resp === 'granted') window.addEventListener('deviceorientation', handler, true);
+      }).catch(() => {});
+    } else {
+      window.addEventListener('deviceorientationabsolute', handler, true);
+      window.addEventListener('deviceorientation', handler, true);
+    }
+  }
+
+  // ---------- Lógica de telemetria ----------
 
   function haversineKm(lat1, lon1, lat2, lon2) {
     const R = 6371;
@@ -186,40 +324,11 @@
     console.log('[alerta-desktop] excesso de velocidade', alerta);
   }
 
-  function inicializarMapaSeNecessario(lat, lng) {
-    if (mapaLeaflet) return;
-    mapaLeaflet = L.map('mapaReal').setView([lat, lng], 16);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '\u00a9 OpenStreetMap',
-      maxZoom: 19,
-    }).addTo(mapaLeaflet);
-    polylinhaTrajeto = L.polyline([], { color: '#2563eb', weight: 4 }).addTo(mapaLeaflet);
-  }
-
-  function atualizarMapa(lat, lng) {
-    inicializarMapaSeNecessario(lat, lng);
-    polylinhaTrajeto.addLatLng([lat, lng]);
-    if (!marcadorInicio) {
-      marcadorInicio = L.circleMarker([lat, lng], { radius: 7, color: '#166534', fillColor: '#4ade80', fillOpacity: 1 })
-        .addTo(mapaLeaflet).bindPopup('In\u00edcio');
-    }
-    if (marcadorAtual) mapaLeaflet.removeLayer(marcadorAtual);
-    marcadorAtual = L.circleMarker([lat, lng], { radius: 7, color: '#c2410c', fillColor: '#fb923c', fillOpacity: 1 })
-      .addTo(mapaLeaflet).bindPopup('Posi\u00e7\u00e3o atual');
-    mapaLeaflet.panTo([lat, lng]);
-  }
-
-  function adicionarMarcadorParada(lat, lng, duracaoMin) {
-    if (!mapaLeaflet) return;
-    L.circleMarker([lat, lng], { radius: 8, color: '#991b1b', fillColor: '#ef4444', fillOpacity: 1 })
-      .addTo(mapaLeaflet).bindPopup(`Parada de ${duracaoMin} min`);
-  }
-
   function atualizarLatLng(lat, lng) {
     document.getElementById('latlng').textContent = lat.toFixed(5) + ', ' + lng.toFixed(5);
     const link = document.getElementById('linkMaps');
     link.href = `https://www.google.com/maps?q=${lat},${lng}`;
-    link.style.display = 'inline-block';
+    link.style.display = 'block';
   }
 
   function setStatus(id, texto, tipo) {
@@ -230,7 +339,7 @@
 
   function atualizarKmTotal() {
     const total = kmInicialValor + kmAcumulado;
-    document.getElementById('kmTotal').textContent = kmInicialValor > 0 ? total.toFixed(2) : '—';
+    document.getElementById('kmTotal').textContent = (kmInicialValor > 0 || kmAcumulado > 0) ? total.toFixed(2) : '—';
   }
 
   function atualizarVelocidades(speedKmh) {
@@ -277,10 +386,20 @@
     `).join('');
   }
 
-  function registrarPonto(lat, lng, accuracy, speedMs) {
+  function registrarPonto(lat, lng, accuracy, speedMs, headingGps) {
     const agora = Date.now();
     leituras += 1;
     const speedKmh = (speedMs !== null && speedMs !== undefined) ? speedMs * 3.6 : null;
+
+    let headingParaMapa = null;
+    if (!compassoDisponivel) {
+      if (typeof headingGps === 'number' && !isNaN(headingGps)) {
+        headingParaMapa = headingGps;
+      } else if (pontos.length > 0) {
+        const ultimo = pontos[pontos.length - 1];
+        headingParaMapa = calcularBearing(ultimo.lat, ultimo.lng, lat, lng);
+      }
+    }
 
     if (pontos.length > 0) {
       const ultimo = pontos[pontos.length - 1];
@@ -291,7 +410,6 @@
       if (foiParada) {
         paradas.push({ inicio: ultimo.t, fim: agora, duracaoMin: Math.round(dtMin), lat: ultimo.lat, lng: ultimo.lng });
         atualizarParadas();
-        adicionarMarcadorParada(ultimo.lat, ultimo.lng, Math.round(dtMin));
       } else {
         tempoMovimentoMs += dtMs;
       }
@@ -317,7 +435,7 @@
     atualizarKmTotal();
     atualizarVelocidades(speedKmh);
     atualizarLatLng(lat, lng);
-    atualizarMapa(lat, lng);
+    atualizarMapa(lat, lng, headingParaMapa);
   }
 
   function lerKmInicial() {
@@ -334,6 +452,7 @@
 
   async function iniciarNativo() {
     lerKmInicial();
+    iniciarCompasso();
     setStatus('statusGeo', 'Pedindo permissão de localização (segundo plano)...', 'wait');
     try {
       watcherId = await BackgroundGeolocation.addWatcher(
@@ -356,7 +475,7 @@
             }
             return;
           }
-          registrarPonto(location.latitude, location.longitude, location.accuracy, location.speed);
+          registrarPonto(location.latitude, location.longitude, location.accuracy, location.speed, location.bearing);
           setStatus('statusGeo', 'Capturando telemetria — funciona mesmo com a tela apagada.', 'bg');
         }
       );
@@ -384,11 +503,12 @@
       return;
     }
     lerKmInicial();
+    iniciarCompasso();
     setStatus('statusGeo', 'Pedindo permissão de localização...', 'wait');
     watchId = navigator.geolocation.watchPosition(
       (pos) => {
         const c = pos.coords;
-        registrarPonto(c.latitude, c.longitude, c.accuracy, c.speed);
+        registrarPonto(c.latitude, c.longitude, c.accuracy, c.speed, c.heading);
         setStatus('statusGeo', 'Capturando telemetria (só em primeiro plano — versão web).', 'ok');
       },
       (err) => setStatus('statusGeo', 'Erro: ' + err.message, 'alerta'),
@@ -410,7 +530,7 @@
   }
 
   function mostrarResumoPausa() {
-    const totalTxt = kmInicialValor > 0 ? `, km total estimado: ${(kmInicialValor + kmAcumulado).toFixed(2)}` : '';
+    const totalTxt = kmInicialValor > 0 ? `, km final: ${(kmInicialValor + kmAcumulado).toFixed(2)}` : '';
     const paradasTxt = paradas.length > 0 ? `, ${paradas.length} parada(s)` : '';
     const alertasTxt = alertasVelocidade.length > 0 ? `, ${alertasVelocidade.length} excesso(s) de velocidade` : '';
     document.getElementById('fieldSpd').classList.remove('excesso');
