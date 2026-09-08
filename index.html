@@ -86,6 +86,29 @@
     box-shadow: 0 1px 4px rgba(0,0,0,0.3); text-align: right;
   }
   .overlay-latlng a { display: block; color: #2563eb; font-size: 10.5px; margin-top: 2px; text-decoration: none; }
+
+  /* Tema escuro (automatico apos 18h) */
+  body.tema-escuro { background: #0f172a; color: #e5e7eb; }
+  body.tema-escuro .sub { color: #94a3b8; }
+  body.tema-escuro .card { background: #1e293b; box-shadow: 0 1px 3px rgba(0,0,0,0.5); }
+  body.tema-escuro .card h2 { color: #e2e8f0; }
+  body.tema-escuro .field { background: #0f172a; }
+  body.tema-escuro .field .label { color: #64748b; }
+  body.tema-escuro .field .value { color: #f1f5f9; }
+  body.tema-escuro .field .sublabel { color: #64748b; }
+  body.tema-escuro .field.destaque { background: #1e3a5f; }
+  body.tema-escuro label.lbl { color: #cbd5e1; }
+  body.tema-escuro input[type=number] { background: #0f172a; color: #f1f5f9; border-color: #334155; }
+  body.tema-escuro input[disabled] { background: #1e293b; color: #64748b; }
+  body.tema-escuro .parada-item, body.tema-escuro .alerta-item { background: #0f172a; }
+  body.tema-escuro .vazio { color: #64748b; }
+  body.tema-escuro .legenda { color: #64748b; }
+  body.tema-escuro .status.wait { background: #422006; color: #fde68a; }
+  body.tema-escuro .status.ok { background: #052e16; color: #86efac; }
+  body.tema-escuro .status.alerta { background: #450a0a; color: #fca5a5; }
+  body.tema-escuro .status.bg { background: #172554; color: #93c5fd; }
+  /* inverte só os tiles do mapa (nao os overlays) pra simular mapa escuro sem precisar de outro provedor */
+  body.tema-escuro #mapaReal { filter: brightness(0.65) invert(1) hue-rotate(180deg) saturate(0.5); }
 </style>
 </head>
 <body>
@@ -201,6 +224,8 @@
   let coordenadasRota = [];
   let compassoDisponivel = false;
   let headingAtual = 0;
+  let centroAtual = null;       // [lng, lat] mais recente
+  let ultimaSincroniaCompasso = 0;
 
   function inicializarMapaSeNecessario(lat, lng) {
     if (mapaGL) return;
@@ -229,6 +254,8 @@
       attributionControl: false,
     });
     mapaGL.addControl(new maplibregl.AttributionControl({ compact: true }));
+    mapaGL.dragRotate.disable();     // evita o usuário desalinhar a câmera sem querer
+    mapaGL.touchZoomRotate.disableRotation();
 
     mapaGL.on('load', () => {
       mapaGL.addSource('trajeto', { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } } });
@@ -245,6 +272,19 @@
     // porque quem gira é o mapa (bearing), não o ícone — efeito "sempre de frente".
     marcadorCaminhao = new maplibregl.Marker({ element: el, rotationAlignment: 'map', rotation: 0 })
       .setLngLat([lng, lat]).addTo(mapaGL);
+
+    centroAtual = [lng, lat];
+  }
+
+  // Ponto único que move a câmera: SEMPRE manda posição + rotação juntas, num
+  // "jumpTo" (sem animação). Antes a posição (a cada ponto de GPS) e a rotação
+  // (a cada evento da bússola, que dispara muito mais rápido) chamavam easeTo
+  // separadamente — cada chamada cancelava a animação da outra no meio do
+  // caminho, e a câmera parecia não acompanhar o caminhão. Centralizando tudo
+  // aqui, com jumpTo (instantâneo), isso não acontece mais.
+  function sincronizarCamera() {
+    if (!mapaGL || !centroAtual) return;
+    mapaGL.jumpTo({ center: centroAtual, bearing: headingAtual, pitch: 60 });
   }
 
   function atualizarMapa(lat, lng, headingGraus) {
@@ -253,16 +293,14 @@
     const fonte = mapaGL.getSource && mapaGL.getSource('trajeto');
     if (fonte) fonte.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: coordenadasRota } });
     marcadorCaminhao.setLngLat([lng, lat]);
+    centroAtual = [lng, lat];
 
-    const opcoes = { center: [lng, lat], duration: 500 };
-    // se a bússola do celular estiver ativa, ela já cuida da rotação continuamente —
-    // aqui só reposiciona o centro. Sem bússola, usa o rumo vindo do GPS (heading/bearing).
+    // sem bússola ativa, usa o rumo vindo do GPS (heading do location ou calculado entre pontos)
     if (!compassoDisponivel && headingGraus !== null && !isNaN(headingGraus)) {
-      opcoes.bearing = headingGraus;
       headingAtual = headingGraus;
       atualizarCompasso(headingGraus);
     }
-    mapaGL.easeTo(opcoes);
+    sincronizarCamera();
   }
 
   function atualizarCompasso(bearingGraus) {
@@ -279,8 +317,11 @@
 
   // Bússola do celular (magnetômetro/giroscópio) — quando disponível, gira o mapa
   // continuamente, inclusive parado. iOS pede permissão explícita; Android geralmente não.
+  // Throttle de ~150ms pra não sobrecarregar o mapa com o evento disparando dezenas de vezes por segundo.
   function iniciarCompasso() {
     function handler(e) {
+      const agora = Date.now();
+      if (agora - ultimaSincroniaCompasso < 150) return;
       let heading = null;
       if (e.webkitCompassHeading !== undefined && e.webkitCompassHeading !== null) {
         heading = e.webkitCompassHeading; // iOS — já em graus horário a partir do norte
@@ -288,10 +329,11 @@
         heading = (360 - e.alpha) % 360; // aproximação comum pra Android — pode precisar de ajuste fino por aparelho
       }
       if (heading !== null && !isNaN(heading)) {
+        ultimaSincroniaCompasso = agora;
         compassoDisponivel = true;
         headingAtual = heading;
-        if (mapaGL) mapaGL.easeTo({ bearing: heading, duration: 250 });
         atualizarCompasso(heading);
+        sincronizarCamera();
       }
     }
     if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
@@ -303,6 +345,15 @@
       window.addEventListener('deviceorientation', handler, true);
     }
   }
+
+  // Tema claro/escuro automático por horário do aparelho — escuro a partir das 18h.
+  function aplicarTemaPorHorario() {
+    const hora = new Date().getHours();
+    const escuro = hora >= 18 || hora < 6;
+    document.body.classList.toggle('tema-escuro', escuro);
+  }
+  aplicarTemaPorHorario();
+  setInterval(aplicarTemaPorHorario, 60000); // rechecha a cada minuto, troca sozinho às 18h sem precisar reabrir o app
 
   // ---------- Lógica de telemetria ----------
 
