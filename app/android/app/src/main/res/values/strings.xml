@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">FMS Telemetria</string>
+    <string name="title_activity_main">FMS Telemetria</string>
+    <string name="package_name">br.com.lojasmm.fmstelemetria</string>
+    <string name="custom_url_scheme">br.com.lojasmm.fmstelemetria</string>
+</resources>
