@@ -31,10 +31,14 @@
   input[disabled] { background: #f3f4f6; color: #888; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
-  .field { background: #f8f9fb; border-radius: 8px; padding: 10px; }
+  .field { background: #f8f9fb; border-radius: 8px; padding: 10px; transition: background .2s, color .2s; }
   .field .label { font-size: 10.5px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
   .field .value { font-size: 19px; font-weight: 700; margin-top: 2px; }
+  .field .sublabel { font-size: 10px; color: #999; margin-top: 2px; }
   .field.destaque { background: #eff6ff; }
+  .field.excesso { background: #dc2626; }
+  .field.excesso .label, .field.excesso .sublabel { color: #fecaca; }
+  .field.excesso .value { color: #fff; }
   .status { font-size: 13px; margin-top: 10px; padding: 9px; border-radius: 6px; font-weight: 600; }
   .status.wait { background: #fef9c3; color: #854d0e; }
   .status.ok { background: #dcfce7; color: #166534; }
@@ -47,13 +51,18 @@
     display: inline-block; font-size: 10.5px; font-weight: 700; padding: 3px 8px;
     border-radius: 999px; background: #1e293b; color: #fff; margin-left: 6px; vertical-align: middle;
   }
-  .parada-item {
+  .parada-item, .alerta-item {
     display: flex; justify-content: space-between; align-items: center;
     padding: 8px 10px; border-radius: 8px; background: #f8f9fb; margin-bottom: 6px; font-size: 13px;
   }
-  .parada-item .horario { color: #333; font-weight: 600; }
+  .parada-item .horario, .alerta-item .horario { color: #333; font-weight: 600; }
   .parada-item .duracao {
     background: #fee2e2; color: #991b1b; font-weight: 700; font-size: 11.5px;
+    padding: 3px 8px; border-radius: 999px;
+  }
+  .alerta-item { background: #fef2f2; }
+  .alerta-item .vel {
+    background: #dc2626; color: #fff; font-weight: 700; font-size: 11.5px;
     padding: 3px 8px; border-radius: 999px;
   }
   .vazio { color: #999; font-size: 12.5px; font-style: italic; }
@@ -78,12 +87,27 @@
       <div class="field destaque"><div class="label">Km total (odômetro)</div><div class="value" id="kmTotal">—</div></div>
       <div class="field"><div class="label">Paradas</div><div class="value" id="numParadas">0</div></div>
     </div>
+    <div class="grid3" style="margin-top:10px;">
+      <div class="field" id="fieldSpd">
+        <div class="label">Velocidade</div>
+        <div class="value" id="spd">—</div>
+        <div class="sublabel">Limite: <span id="limiteLabel">80</span> km/h</div>
+      </div>
+      <div class="field"><div class="label">Vel. média</div><div class="value" id="spdMedia">—</div></div>
+      <div class="field"><div class="label">Vel. máxima</div><div class="value" id="spdMax">—</div></div>
+    </div>
     <div class="grid" style="margin-top:10px;">
-      <div class="field"><div class="label">Velocidade</div><div class="value" id="spd">—</div></div>
       <div class="field"><div class="label">Precisão GPS</div><div class="value" id="acc">—</div></div>
       <div class="field"><div class="label">Leituras</div><div class="value" id="count">0</div></div>
-      <div class="field"><div class="label">Tempo parado (total)</div><div class="value" id="tempoParado">0 min</div></div>
+      <div class="field"><div class="label">Tempo parado</div><div class="value" id="tempoParado">0 min</div></div>
+      <div class="field"><div class="label">Excessos de vel.</div><div class="value" id="numAlertas">0</div></div>
     </div>
+  </div>
+
+  <div class="card">
+    <h2>🚨 Alertas de excesso de velocidade</h2>
+    <div id="listaAlertas"><div class="vazio">Nenhum excesso registrado ainda.</div></div>
+    <div class="legenda">Limite configurado: 80 km/h. Cada excesso fica registrado aqui — em uma versão com backend, esse mesmo evento dispararia o alerta em tempo real no FMS do desktop (ver função enviarAlertaDesktop no código).</div>
   </div>
 
   <div class="card">
@@ -107,7 +131,6 @@
   </div>
 
 <script>
-  // Detecta se está rodando dentro do app nativo (Capacitor) ou no navegador comum.
   const isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
   document.getElementById('modoBadge').textContent = isNative ? 'app (fundo ativo)' : 'web (só primeiro plano)';
 
@@ -116,20 +139,20 @@
     BackgroundGeolocation = window.Capacitor.Plugins.BackgroundGeolocation;
   }
 
-  let watcherId = null;      // id do watcher nativo (Capacitor)
-  let watchId = null;        // id do watchPosition do navegador (fallback web)
+  let watcherId = null;
+  let watchId = null;
   let pontos = [];
   let kmAcumulado = 0;
   let leituras = 0;
   let kmInicialValor = 0;
-  let paradas = [];          // { inicio, fim, duracaoMin, lat, lng }
+  let paradas = [];
+  let alertasVelocidade = [];
+  let velocidadeMaxima = 0;
+  let tempoMovimentoMs = 0;
 
-  // Regras de detecção de parada: como o watcher (principalmente em segundo
-  // plano) só dispara quando o veículo se move o suficiente, usamos o GAP de
-  // tempo entre duas leituras consecutivas como indício de parada — se
-  // passou tempo mas o veículo mal se deslocou, ele ficou parado nesse intervalo.
-  const PARADA_MIN_MINUTOS = 2;        // abaixo disso, não conta como parada (ex: semáforo)
-  const PARADA_MAX_DESLOCAMENTO_M = 60; // deslocamento maximo pra ainda considerar "parado"
+  const LIMITE_VELOCIDADE_KMH = 80;
+  const PARADA_MIN_MINUTOS = 2;
+  const PARADA_MAX_DESLOCAMENTO_M = 60;
 
   function haversineKm(lat1, lon1, lat2, lon2) {
     const R = 6371;
@@ -141,6 +164,12 @@
 
   function formatHorario(ts) {
     return new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function enviarAlertaDesktop(alerta) {
+    // TODO (próxima etapa): POST para o backend do FMS, ex:
+    // fetch('https://api.fms.exemplo.com/alertas/velocidade', { method: 'POST', body: JSON.stringify(alerta) });
+    console.log('[alerta-desktop] excesso de velocidade', alerta);
   }
 
   function desenharTrilha() {
@@ -172,7 +201,6 @@
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     });
     ctx.stroke();
-    // pontos de parada (vermelho)
     ctx.fillStyle = '#ef4444';
     paradas.forEach(par => {
       if (par.lat == null) return;
@@ -198,6 +226,16 @@
     document.getElementById('kmTotal').textContent = kmInicialValor > 0 ? total.toFixed(2) : '—';
   }
 
+  function atualizarVelocidades(speedKmh) {
+    if (speedKmh !== null && speedKmh !== undefined && !isNaN(speedKmh)) {
+      if (speedKmh > velocidadeMaxima) velocidadeMaxima = speedKmh;
+      document.getElementById('spdMax').textContent = velocidadeMaxima.toFixed(1) + ' km/h';
+    }
+    const horasMovimento = tempoMovimentoMs / 3600000;
+    const media = horasMovimento > 0 ? kmAcumulado / horasMovimento : 0;
+    document.getElementById('spdMedia').textContent = horasMovimento > 0 ? media.toFixed(1) + ' km/h' : '—';
+  }
+
   function atualizarParadas() {
     document.getElementById('numParadas').textContent = paradas.length;
     const totalMin = paradas.reduce((soma, par) => soma + par.duracaoMin, 0);
@@ -217,28 +255,59 @@
     `).join('');
   }
 
+  function atualizarAlertas() {
+    document.getElementById('numAlertas').textContent = alertasVelocidade.length;
+    const cont = document.getElementById('listaAlertas');
+    if (alertasVelocidade.length === 0) {
+      cont.innerHTML = '<div class="vazio">Nenhum excesso registrado ainda.</div>';
+      return;
+    }
+    cont.innerHTML = alertasVelocidade.slice().reverse().map(al => `
+      <div class="alerta-item">
+        <span class="horario">${formatHorario(al.horario)}</span>
+        <span class="vel">${al.velocidadeKmh.toFixed(0)} km/h</span>
+      </div>
+    `).join('');
+  }
+
   function registrarPonto(lat, lng, accuracy, speedMs) {
     const agora = Date.now();
     leituras += 1;
+    const speedKmh = (speedMs !== null && speedMs !== undefined) ? speedMs * 3.6 : null;
+
     if (pontos.length > 0) {
       const ultimo = pontos[pontos.length - 1];
       const d = haversineKm(ultimo.lat, ultimo.lng, lat, lng);
-      const dtMin = (agora - ultimo.t) / 60000;
-      // gap de tempo grande + pouco deslocamento = ficou parado nesse intervalo
-      if (dtMin >= PARADA_MIN_MINUTOS && d * 1000 < PARADA_MAX_DESLOCAMENTO_M) {
+      const dtMs = agora - ultimo.t;
+      const dtMin = dtMs / 60000;
+      const foiParada = dtMin >= PARADA_MIN_MINUTOS && d * 1000 < PARADA_MAX_DESLOCAMENTO_M;
+      if (foiParada) {
         paradas.push({ inicio: ultimo.t, fim: agora, duracaoMin: Math.round(dtMin), lat: ultimo.lat, lng: ultimo.lng });
         atualizarParadas();
+      } else {
+        tempoMovimentoMs += dtMs;
       }
-      // ignora saltos maiores que 300m entre leituras consecutivas — ruído de
-      // GPS típico (multipath urbano, cold fix) em vez de deslocamento real.
       if (d < 0.3) kmAcumulado += d;
     }
     pontos.push({ lat, lng, t: agora });
+
+    const fieldSpd = document.getElementById('fieldSpd');
+    if (speedKmh !== null && speedKmh > LIMITE_VELOCIDADE_KMH) {
+      fieldSpd.classList.add('excesso');
+      const alerta = { horario: agora, velocidadeKmh: speedKmh, lat, lng };
+      alertasVelocidade.push(alerta);
+      atualizarAlertas();
+      enviarAlertaDesktop(alerta);
+    } else {
+      fieldSpd.classList.remove('excesso');
+    }
+
     document.getElementById('kmEstimado').textContent = kmAcumulado.toFixed(2);
-    document.getElementById('spd').textContent = (speedMs !== null && speedMs !== undefined) ? (speedMs*3.6).toFixed(1) + ' km/h' : '—';
+    document.getElementById('spd').textContent = speedKmh !== null ? speedKmh.toFixed(1) + ' km/h' : '—';
     document.getElementById('acc').textContent = accuracy !== null && accuracy !== undefined ? Math.round(accuracy) + ' m' : '—';
     document.getElementById('count').textContent = leituras;
     atualizarKmTotal();
+    atualizarVelocidades(speedKmh);
     desenharTrilha();
   }
 
@@ -333,8 +402,10 @@
 
   function mostrarResumoPausa() {
     const totalTxt = kmInicialValor > 0 ? `, km total estimado: ${(kmInicialValor + kmAcumulado).toFixed(2)}` : '';
-    const paradasTxt = paradas.length > 0 ? `, ${paradas.length} parada(s) detectada(s)` : '';
-    setStatus('statusGeo', `Pausado — ${kmAcumulado.toFixed(2)} km percorridos (${leituras} leituras)${totalTxt}${paradasTxt}.`, 'wait');
+    const paradasTxt = paradas.length > 0 ? `, ${paradas.length} parada(s)` : '';
+    const alertasTxt = alertasVelocidade.length > 0 ? `, ${alertasVelocidade.length} excesso(s) de velocidade` : '';
+    document.getElementById('fieldSpd').classList.remove('excesso');
+    setStatus('statusGeo', `Pausado — ${kmAcumulado.toFixed(2)} km percorridos (${leituras} leituras)${totalTxt}${paradasTxt}${alertasTxt}.`, 'wait');
   }
 
   document.getElementById('btnGeo').addEventListener('click', () => {
@@ -354,7 +425,6 @@
     }
     const diffPct = Math.abs(kmAcumulado - real) / real * 100;
     const diffKm = Math.abs(kmAcumulado - real);
-    // mesma regra combinada no backlog: tolerância de 10% ou 15km, o que for maior.
     const toleranciaPct = 10;
     const toleranciaKm = 15;
     const dentroDaTolerancia = diffPct <= toleranciaPct || diffKm <= toleranciaKm;
