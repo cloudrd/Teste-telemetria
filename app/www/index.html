@@ -28,10 +28,13 @@
     width: 100%; padding: 12px; font-size: 16px; border: 1px solid #ccc;
     border-radius: 8px; margin-bottom: 8px;
   }
+  input[disabled] { background: #f3f4f6; color: #888; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
   .field { background: #f8f9fb; border-radius: 8px; padding: 10px; }
   .field .label { font-size: 10.5px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
   .field .value { font-size: 19px; font-weight: 700; margin-top: 2px; }
+  .field.destaque { background: #eff6ff; }
   .status { font-size: 13px; margin-top: 10px; padding: 9px; border-radius: 6px; font-weight: 600; }
   .status.wait { background: #fef9c3; color: #854d0e; }
   .status.ok { background: #dcfce7; color: #166534; }
@@ -44,6 +47,16 @@
     display: inline-block; font-size: 10.5px; font-weight: 700; padding: 3px 8px;
     border-radius: 999px; background: #1e293b; color: #fff; margin-left: 6px; vertical-align: middle;
   }
+  .parada-item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 10px; border-radius: 8px; background: #f8f9fb; margin-bottom: 6px; font-size: 13px;
+  }
+  .parada-item .horario { color: #333; font-weight: 600; }
+  .parada-item .duracao {
+    background: #fee2e2; color: #991b1b; font-weight: 700; font-size: 11.5px;
+    padding: 3px 8px; border-radius: 999px;
+  }
+  .vazio { color: #999; font-size: 12.5px; font-style: italic; }
 </style>
 </head>
 <body>
@@ -51,21 +64,38 @@
   <div class="sub">Captura de GPS em segundo plano (app) alimentando a mesma lógica do backlog (km estimado × hodômetro real × alerta de divergência)</div>
 
   <div class="card">
+    <h2>🚗 Antes de começar</h2>
+    <label class="lbl">Km inicial do veículo (odômetro, opcional)</label>
+    <input type="number" id="kmInicial" placeholder="ex: 45320" step="1">
+  </div>
+
+  <div class="card">
     <h2>📍 Captura de GPS</h2>
     <button id="btnGeo">Iniciar período de telemetria</button>
     <div id="statusGeo" class="status wait">Aguardando início.</div>
-    <div class="grid">
-      <div class="field"><div class="label">Km estimado (telemetria)</div><div class="value" id="kmEstimado">0.00</div></div>
+    <div class="grid3" style="margin-top:10px;">
+      <div class="field"><div class="label">Km percorrido</div><div class="value" id="kmEstimado">0.00</div></div>
+      <div class="field destaque"><div class="label">Km total (odômetro)</div><div class="value" id="kmTotal">—</div></div>
+      <div class="field"><div class="label">Paradas</div><div class="value" id="numParadas">0</div></div>
+    </div>
+    <div class="grid" style="margin-top:10px;">
       <div class="field"><div class="label">Velocidade</div><div class="value" id="spd">—</div></div>
       <div class="field"><div class="label">Precisão GPS</div><div class="value" id="acc">—</div></div>
       <div class="field"><div class="label">Leituras</div><div class="value" id="count">0</div></div>
+      <div class="field"><div class="label">Tempo parado (total)</div><div class="value" id="tempoParado">0 min</div></div>
     </div>
+  </div>
+
+  <div class="card">
+    <h2>⏸️ Paradas detectadas</h2>
+    <div id="listaParadas"><div class="vazio">Nenhuma parada detectada ainda.</div></div>
+    <div class="legenda">Detecção automática: quando o veículo fica parado por 2 minutos ou mais (sem deslocamento relevante), registra o horário e a duração. Paradas curtas (semáforo, trânsito) não entram na lista.</div>
   </div>
 
   <div class="card">
     <h2>🗺️ Trilha percorrida (esboço)</h2>
     <canvas id="mapa" width="600" height="440"></canvas>
-    <div class="legenda">Desenho simples da rota a partir dos pontos de GPS — não é mapa real, só visualização do trajeto capturado.</div>
+    <div class="legenda">Verde = início, laranja = posição atual, vermelho = ponto de parada. Não é mapa real, só visualização do trajeto capturado.</div>
   </div>
 
   <div class="card">
@@ -91,6 +121,15 @@
   let pontos = [];
   let kmAcumulado = 0;
   let leituras = 0;
+  let kmInicialValor = 0;
+  let paradas = [];          // { inicio, fim, duracaoMin, lat, lng }
+
+  // Regras de detecção de parada: como o watcher (principalmente em segundo
+  // plano) só dispara quando o veículo se move o suficiente, usamos o GAP de
+  // tempo entre duas leituras consecutivas como indício de parada — se
+  // passou tempo mas o veículo mal se deslocou, ele ficou parado nesse intervalo.
+  const PARADA_MIN_MINUTOS = 2;        // abaixo disso, não conta como parada (ex: semáforo)
+  const PARADA_MAX_DESLOCAMENTO_M = 60; // deslocamento maximo pra ainda considerar "parado"
 
   function haversineKm(lat1, lon1, lat2, lon2) {
     const R = 6371;
@@ -98,6 +137,10 @@
     const dLon = (lon2 - lon1) * Math.PI / 180;
     const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLon/2)**2;
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  }
+
+  function formatHorario(ts) {
+    return new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
   }
 
   function desenharTrilha() {
@@ -129,6 +172,13 @@
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     });
     ctx.stroke();
+    // pontos de parada (vermelho)
+    ctx.fillStyle = '#ef4444';
+    paradas.forEach(par => {
+      if (par.lat == null) return;
+      const [x, y] = toXY(par);
+      ctx.beginPath(); ctx.arc(x, y, 6, 0, 7); ctx.fill();
+    });
     const [x0, y0] = toXY(pontos[0]);
     ctx.fillStyle = '#4ade80';
     ctx.beginPath(); ctx.arc(x0, y0, 5, 0, 7); ctx.fill();
@@ -143,22 +193,69 @@
     el.className = 'status ' + tipo;
   }
 
+  function atualizarKmTotal() {
+    const total = kmInicialValor + kmAcumulado;
+    document.getElementById('kmTotal').textContent = kmInicialValor > 0 ? total.toFixed(2) : '—';
+  }
+
+  function atualizarParadas() {
+    document.getElementById('numParadas').textContent = paradas.length;
+    const totalMin = paradas.reduce((soma, par) => soma + par.duracaoMin, 0);
+    const h = Math.floor(totalMin / 60), m = totalMin % 60;
+    document.getElementById('tempoParado').textContent = h > 0 ? `${h}h ${m}min` : `${m} min`;
+
+    const cont = document.getElementById('listaParadas');
+    if (paradas.length === 0) {
+      cont.innerHTML = '<div class="vazio">Nenhuma parada detectada ainda.</div>';
+      return;
+    }
+    cont.innerHTML = paradas.slice().reverse().map(par => `
+      <div class="parada-item">
+        <span class="horario">${formatHorario(par.inicio)} — ${formatHorario(par.fim)}</span>
+        <span class="duracao">${par.duracaoMin} min</span>
+      </div>
+    `).join('');
+  }
+
   function registrarPonto(lat, lng, accuracy, speedMs) {
+    const agora = Date.now();
     leituras += 1;
     if (pontos.length > 0) {
       const ultimo = pontos[pontos.length - 1];
       const d = haversineKm(ultimo.lat, ultimo.lng, lat, lng);
+      const dtMin = (agora - ultimo.t) / 60000;
+      // gap de tempo grande + pouco deslocamento = ficou parado nesse intervalo
+      if (dtMin >= PARADA_MIN_MINUTOS && d * 1000 < PARADA_MAX_DESLOCAMENTO_M) {
+        paradas.push({ inicio: ultimo.t, fim: agora, duracaoMin: Math.round(dtMin), lat: ultimo.lat, lng: ultimo.lng });
+        atualizarParadas();
+      }
+      // ignora saltos maiores que 300m entre leituras consecutivas — ruído de
+      // GPS típico (multipath urbano, cold fix) em vez de deslocamento real.
       if (d < 0.3) kmAcumulado += d;
     }
-    pontos.push({ lat, lng, t: Date.now() });
+    pontos.push({ lat, lng, t: agora });
     document.getElementById('kmEstimado').textContent = kmAcumulado.toFixed(2);
     document.getElementById('spd').textContent = (speedMs !== null && speedMs !== undefined) ? (speedMs*3.6).toFixed(1) + ' km/h' : '—';
     document.getElementById('acc').textContent = accuracy !== null && accuracy !== undefined ? Math.round(accuracy) + ' m' : '—';
     document.getElementById('count').textContent = leituras;
+    atualizarKmTotal();
     desenharTrilha();
   }
 
+  function lerKmInicial() {
+    const el = document.getElementById('kmInicial');
+    const v = parseFloat(el.value);
+    kmInicialValor = (!isNaN(v) && v > 0) ? v : 0;
+    el.disabled = true;
+    atualizarKmTotal();
+  }
+
+  function liberarKmInicial() {
+    document.getElementById('kmInicial').disabled = false;
+  }
+
   async function iniciarNativo() {
+    lerKmInicial();
     setStatus('statusGeo', 'Pedindo permissão de localização (segundo plano)...', 'wait');
     try {
       watcherId = await BackgroundGeolocation.addWatcher(
@@ -199,7 +296,8 @@
     }
     document.getElementById('btnGeo').textContent = 'Iniciar período de telemetria';
     document.getElementById('btnGeo').classList.remove('stop');
-    setStatus('statusGeo', 'Período pausado — dados mantidos até "Fechar período".', 'wait');
+    liberarKmInicial();
+    mostrarResumoPausa();
   }
 
   function iniciarWeb() {
@@ -207,6 +305,7 @@
       setStatus('statusGeo', 'Este navegador não suporta geolocalização.', 'alerta');
       return;
     }
+    lerKmInicial();
     setStatus('statusGeo', 'Pedindo permissão de localização...', 'wait');
     watchId = navigator.geolocation.watchPosition(
       (pos) => {
@@ -228,7 +327,14 @@
     }
     document.getElementById('btnGeo').textContent = 'Iniciar período de telemetria';
     document.getElementById('btnGeo').classList.remove('stop');
-    setStatus('statusGeo', 'Período pausado — dados mantidos até "Fechar período".', 'wait');
+    liberarKmInicial();
+    mostrarResumoPausa();
+  }
+
+  function mostrarResumoPausa() {
+    const totalTxt = kmInicialValor > 0 ? `, km total estimado: ${(kmInicialValor + kmAcumulado).toFixed(2)}` : '';
+    const paradasTxt = paradas.length > 0 ? `, ${paradas.length} parada(s) detectada(s)` : '';
+    setStatus('statusGeo', `Pausado — ${kmAcumulado.toFixed(2)} km percorridos (${leituras} leituras)${totalTxt}${paradasTxt}.`, 'wait');
   }
 
   document.getElementById('btnGeo').addEventListener('click', () => {
@@ -248,6 +354,7 @@
     }
     const diffPct = Math.abs(kmAcumulado - real) / real * 100;
     const diffKm = Math.abs(kmAcumulado - real);
+    // mesma regra combinada no backlog: tolerância de 10% ou 15km, o que for maior.
     const toleranciaPct = 10;
     const toleranciaKm = 15;
     const dentroDaTolerancia = diffPct <= toleranciaPct || diffKm <= toleranciaKm;
