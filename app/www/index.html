@@ -67,6 +67,7 @@
   }
   .vazio { color: #999; font-size: 12.5px; font-style: italic; }
 </style>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 </head>
 <body>
   <h1>Esboço de FMS — Telemetria <span id="modoBadge" class="badge">web</span></h1>
@@ -117,9 +118,17 @@
   </div>
 
   <div class="card">
-    <h2>🗺️ Trilha percorrida (esboço)</h2>
-    <canvas id="mapa" width="600" height="440"></canvas>
-    <div class="legenda">Verde = início, laranja = posição atual, vermelho = ponto de parada. Não é mapa real, só visualização do trajeto capturado.</div>
+    <h2>🗺️ Trilha percorrida (mapa real)</h2>
+    <div id="mapaReal" style="height:280px; border-radius:8px; background:#e5e7eb;"></div>
+    <div class="legenda">Verde = início, laranja = posição atual, vermelho = pontos de parada. Mapa via OpenStreetMap (precisa de internet pra carregar os tiles; a captura de GPS em si continua funcionando offline).</div>
+  </div>
+  <div class="card">
+    <h2>📍 Posição atual (GPS)</h2>
+    <div class="field" style="margin-bottom:8px;">
+      <div class="label">Latitude, Longitude</div>
+      <div class="value" id="latlng" style="font-size:16px;">—</div>
+    </div>
+    <a id="linkMaps" href="#" target="_blank" style="display:none; font-size:13px; color:#2563eb; font-weight:600; text-decoration:none;">Abrir no Google Maps &#8599;</a>
   </div>
 
   <div class="card">
@@ -130,6 +139,7 @@
     <div id="statusReconciliacao" class="status wait">Sem comparação ainda.</div>
   </div>
 
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
   const isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
   document.getElementById('modoBadge').textContent = isNative ? 'app (fundo ativo)' : 'web (só primeiro plano)';
@@ -142,6 +152,10 @@
   let watcherId = null;
   let watchId = null;
   let pontos = [];
+  let mapaLeaflet = null;
+  let polylinhaTrajeto = null;
+  let marcadorInicio = null;
+  let marcadorAtual = null;
   let kmAcumulado = 0;
   let leituras = 0;
   let kmInicialValor = 0;
@@ -172,47 +186,40 @@
     console.log('[alerta-desktop] excesso de velocidade', alerta);
   }
 
-  function desenharTrilha() {
-    const cv = document.getElementById('mapa');
-    const ctx = cv.getContext('2d');
-    ctx.clearRect(0, 0, cv.width, cv.height);
-    if (pontos.length < 2) {
-      ctx.fillStyle = '#64748b';
-      ctx.font = '14px sans-serif';
-      ctx.fillText('Aguardando pontos suficientes...', 16, 30);
-      return;
+  function inicializarMapaSeNecessario(lat, lng) {
+    if (mapaLeaflet) return;
+    mapaLeaflet = L.map('mapaReal').setView([lat, lng], 16);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '\u00a9 OpenStreetMap',
+      maxZoom: 19,
+    }).addTo(mapaLeaflet);
+    polylinhaTrajeto = L.polyline([], { color: '#2563eb', weight: 4 }).addTo(mapaLeaflet);
+  }
+
+  function atualizarMapa(lat, lng) {
+    inicializarMapaSeNecessario(lat, lng);
+    polylinhaTrajeto.addLatLng([lat, lng]);
+    if (!marcadorInicio) {
+      marcadorInicio = L.circleMarker([lat, lng], { radius: 7, color: '#166534', fillColor: '#4ade80', fillOpacity: 1 })
+        .addTo(mapaLeaflet).bindPopup('In\u00edcio');
     }
-    const lats = pontos.map(p => p.lat), lngs = pontos.map(p => p.lng);
-    const minLat = Math.min(...lats), maxLat = Math.max(...lats);
-    const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
-    const pad = 24;
-    const escalaX = (cv.width - pad*2) / (maxLng - minLng || 0.0001);
-    const escalaY = (cv.height - pad*2) / (maxLat - minLat || 0.0001);
-    const escala = Math.min(escalaX, escalaY);
-    const toXY = (p) => [
-      pad + (p.lng - minLng) * escala,
-      cv.height - pad - (p.lat - minLat) * escala,
-    ];
-    ctx.strokeStyle = '#22d3ee';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    pontos.forEach((p, i) => {
-      const [x, y] = toXY(p);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-    ctx.fillStyle = '#ef4444';
-    paradas.forEach(par => {
-      if (par.lat == null) return;
-      const [x, y] = toXY(par);
-      ctx.beginPath(); ctx.arc(x, y, 6, 0, 7); ctx.fill();
-    });
-    const [x0, y0] = toXY(pontos[0]);
-    ctx.fillStyle = '#4ade80';
-    ctx.beginPath(); ctx.arc(x0, y0, 5, 0, 7); ctx.fill();
-    const [xN, yN] = toXY(pontos[pontos.length - 1]);
-    ctx.fillStyle = '#fb923c';
-    ctx.beginPath(); ctx.arc(xN, yN, 5, 0, 7); ctx.fill();
+    if (marcadorAtual) mapaLeaflet.removeLayer(marcadorAtual);
+    marcadorAtual = L.circleMarker([lat, lng], { radius: 7, color: '#c2410c', fillColor: '#fb923c', fillOpacity: 1 })
+      .addTo(mapaLeaflet).bindPopup('Posi\u00e7\u00e3o atual');
+    mapaLeaflet.panTo([lat, lng]);
+  }
+
+  function adicionarMarcadorParada(lat, lng, duracaoMin) {
+    if (!mapaLeaflet) return;
+    L.circleMarker([lat, lng], { radius: 8, color: '#991b1b', fillColor: '#ef4444', fillOpacity: 1 })
+      .addTo(mapaLeaflet).bindPopup(`Parada de ${duracaoMin} min`);
+  }
+
+  function atualizarLatLng(lat, lng) {
+    document.getElementById('latlng').textContent = lat.toFixed(5) + ', ' + lng.toFixed(5);
+    const link = document.getElementById('linkMaps');
+    link.href = `https://www.google.com/maps?q=${lat},${lng}`;
+    link.style.display = 'inline-block';
   }
 
   function setStatus(id, texto, tipo) {
@@ -284,6 +291,7 @@
       if (foiParada) {
         paradas.push({ inicio: ultimo.t, fim: agora, duracaoMin: Math.round(dtMin), lat: ultimo.lat, lng: ultimo.lng });
         atualizarParadas();
+        adicionarMarcadorParada(ultimo.lat, ultimo.lng, Math.round(dtMin));
       } else {
         tempoMovimentoMs += dtMs;
       }
@@ -308,7 +316,8 @@
     document.getElementById('count').textContent = leituras;
     atualizarKmTotal();
     atualizarVelocidades(speedKmh);
-    desenharTrilha();
+    atualizarLatLng(lat, lng);
+    atualizarMapa(lat, lng);
   }
 
   function lerKmInicial() {
