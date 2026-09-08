@@ -87,6 +87,17 @@
   }
   .overlay-latlng a { display: block; color: #2563eb; font-size: 10.5px; margin-top: 2px; text-decoration: none; }
 
+  .field-hero {
+    background: #eff6ff; border-radius: 10px; padding: 18px; text-align: center;
+    margin-bottom: 4px; transition: background .2s, color .2s;
+  }
+  .field-hero .hero-label { font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+  .field-hero .hero-value { font-size: 42px; font-weight: 800; color: #1a1a1a; line-height: 1.1; margin-top: 4px; }
+  .field-hero .hero-sublabel { font-size: 13px; color: #64748b; margin-top: 4px; font-weight: 600; }
+  .field-hero.excesso { background: #dc2626; }
+  .field-hero.excesso .hero-label, .field-hero.excesso .hero-sublabel { color: #fecaca; }
+  .field-hero.excesso .hero-value { color: #fff; }
+
   /* Tema escuro (automatico apos 18h) */
   body.tema-escuro { background: #0f172a; color: #e5e7eb; }
   body.tema-escuro .sub { color: #94a3b8; }
@@ -97,6 +108,9 @@
   body.tema-escuro .field .value { color: #f1f5f9; }
   body.tema-escuro .field .sublabel { color: #64748b; }
   body.tema-escuro .field.destaque { background: #1e3a5f; }
+  body.tema-escuro .field-hero { background: #1e3a5f; }
+  body.tema-escuro .field-hero .hero-value { color: #f1f5f9; }
+  body.tema-escuro .field-hero .hero-label, body.tema-escuro .field-hero .hero-sublabel { color: #93c5fd; }
   body.tema-escuro label.lbl { color: #cbd5e1; }
   body.tema-escuro input[type=number] { background: #0f172a; color: #f1f5f9; border-color: #334155; }
   body.tema-escuro input[disabled] { background: #1e293b; color: #64748b; }
@@ -130,27 +144,30 @@
 
   <div class="card">
     <h2>📊 Dados da viagem</h2>
-    <button id="btnGeo">Iniciar período de telemetria</button>
-    <div id="statusGeo" class="status wait">Aguardando início.</div>
+
+    <div class="field-hero" id="fieldSpd">
+      <div class="hero-label">Velocidade atual</div>
+      <div class="hero-value" id="spd">—</div>
+      <div class="hero-sublabel">Limite: <span id="limiteLabel">80</span> km/h</div>
+    </div>
+
     <div class="grid3" style="margin-top:10px;">
       <div class="field"><div class="label">Km percorrido</div><div class="value" id="kmEstimado">0.00</div></div>
       <div class="field"><div class="label">Paradas</div><div class="value" id="numParadas">0</div></div>
       <div class="field"><div class="label">Excessos de vel.</div><div class="value" id="numAlertas">0</div></div>
     </div>
     <div class="grid3" style="margin-top:10px;">
-      <div class="field" id="fieldSpd">
-        <div class="label">Velocidade</div>
-        <div class="value" id="spd">—</div>
-        <div class="sublabel">Limite: <span id="limiteLabel">80</span> km/h</div>
-      </div>
       <div class="field"><div class="label">Vel. média</div><div class="value" id="spdMedia">—</div></div>
       <div class="field"><div class="label">Vel. máxima</div><div class="value" id="spdMax">—</div></div>
+      <div class="field"><div class="label">Precisão GPS</div><div class="value" id="acc">—</div></div>
     </div>
     <div class="grid" style="margin-top:10px;">
-      <div class="field"><div class="label">Precisão GPS</div><div class="value" id="acc">—</div></div>
       <div class="field"><div class="label">Leituras</div><div class="value" id="count">0</div></div>
       <div class="field"><div class="label">Tempo parado</div><div class="value" id="tempoParado">0 min</div></div>
     </div>
+
+    <button id="btnGeo" style="margin-top:14px;">Iniciar período de telemetria</button>
+    <div id="statusGeo" class="status wait">Aguardando início.</div>
   </div>
 
   <div class="card">
@@ -249,7 +266,7 @@
       },
       center: [lng, lat],
       zoom: 17,
-      pitch: 60,      // inclinação — dá a sensação de visão 3D / navegação
+      pitch: 0,       // sem inclinação 3D — mais leve e o foco no caminhão fica preciso
       bearing: 0,
       attributionControl: false,
     });
@@ -284,7 +301,7 @@
   // aqui, com jumpTo (instantâneo), isso não acontece mais.
   function sincronizarCamera() {
     if (!mapaGL || !centroAtual) return;
-    mapaGL.jumpTo({ center: centroAtual, bearing: headingAtual, pitch: 60 });
+    mapaGL.jumpTo({ center: centroAtual, bearing: headingAtual });
   }
 
   function atualizarMapa(lat, lng, headingGraus) {
