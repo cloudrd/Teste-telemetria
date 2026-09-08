@@ -271,8 +271,10 @@
       attributionControl: false,
     });
     mapaGL.addControl(new maplibregl.AttributionControl({ compact: true }));
-    mapaGL.dragRotate.disable();     // evita o usuário desalinhar a câmera sem querer
+    mapaGL.dragRotate.disable();       // evita o usuário desalinhar a câmera sem querer
     mapaGL.touchZoomRotate.disableRotation();
+    mapaGL.touchPitch.disable();       // gesto de 2 dedos pra inclinar tambem desligado — mapa fica sempre "de cima"
+    mapaGL.keyboard.disable();         // atalhos de teclado tambem podiam inclinar/rotacionar
 
     mapaGL.on('load', () => {
       mapaGL.addSource('trajeto', { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } } });
@@ -301,7 +303,7 @@
   // aqui, com jumpTo (instantâneo), isso não acontece mais.
   function sincronizarCamera() {
     if (!mapaGL || !centroAtual) return;
-    mapaGL.jumpTo({ center: centroAtual, bearing: headingAtual });
+    mapaGL.jumpTo({ center: centroAtual, bearing: headingAtual, pitch: 0 }); // reforca pitch 0 sempre, contra qualquer inclinacao acidental
   }
 
   function atualizarMapa(lat, lng, headingGraus) {
